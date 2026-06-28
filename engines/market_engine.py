@@ -67,47 +67,45 @@ class MarketEngine:
     def _fetch_yfinance(self) -> MarketBias:
         import yfinance as yf
 
-        def fetch_ticker(symbol, period="5d", interval="1d"):
-            """Fetch a single ticker with retry."""
-            for attempt in range(3):
-                try:
-                    t = yf.Ticker(symbol)
-                    hist = t.history(period=period, interval=interval, auto_adjust=True)
-                    if not hist.empty:
-                        return hist
-                except Exception:
-                    pass
-            return None
+        def fetch_quote(symbol):
+            """Fetch last price and day change using fast_info (most reliable)."""
+            try:
+                t = yf.Ticker(symbol)
+                info = t.fast_info
+                price = float(info.last_price or 0)
+                prev  = float(info.previous_close or 0)
+                chg   = round((price - prev) / prev * 100, 2) if prev else 0.0
+                return price, chg
+            except Exception:
+                pass
+            # fallback: 1mo daily history
+            try:
+                t = yf.Ticker(symbol)
+                hist = t.history(period="1mo", interval="1d", auto_adjust=False)
+                if not hist.empty:
+                    s = hist["Close"].dropna()
+                    price = float(s.iloc[-1])
+                    chg   = round((s.iloc[-1] - s.iloc[-2]) / s.iloc[-2] * 100, 2) if len(s) >= 2 else 0.0
+                    return price, chg
+            except Exception:
+                pass
+            return 0.0, 0.0
 
-        def last_price(hist):
-            if hist is None or hist.empty:
-                return 0.0
-            return float(hist["Close"].dropna().iloc[-1])
+        spy,  spy_chg  = fetch_quote("SPY")
+        qqq,  qqq_chg  = fetch_quote("QQQ")
+        vix,  vix_chg  = fetch_quote("^VIX")
+        spx,  _        = fetch_quote("^GSPC")
+        es,   _        = fetch_quote("ES=F")
+        nq,   _        = fetch_quote("NQ=F")
 
-        def day_chg(hist):
-            if hist is None or len(hist) < 2:
-                return 0.0
-            s = hist["Close"].dropna()
-            if len(s) < 2:
-                return 0.0
-            return round((s.iloc[-1] - s.iloc[-2]) / s.iloc[-2] * 100, 2)
-
-        spy_h = fetch_ticker("SPY");  spy   = last_price(spy_h); spy_chg = day_chg(spy_h)
-        qqq_h = fetch_ticker("QQQ");  qqq   = last_price(qqq_h); qqq_chg = day_chg(qqq_h)
-        vix_h = fetch_ticker("^VIX"); vix   = last_price(vix_h); vix_chg = day_chg(vix_h)
-        spx_h = fetch_ticker("^GSPC");spx   = last_price(spx_h)
-        es_h  = fetch_ticker("ES=F"); es    = last_price(es_h)
-        nq_h  = fetch_ticker("NQ=F"); nq    = last_price(nq_h)
-
-        # If core tickers all zero, raise so we fall back to mock
-        if spy == 0.0 and qqq == 0.0 and vix == 0.0:
-            raise ValueError("All core tickers returned 0 — yfinance unreachable")
+        if spy == 0.0 and qqq == 0.0:
+            raise ValueError("Core tickers returned 0 — yfinance unreachable")
 
         sector_data = {}
         for s in config.SECTOR_ETFS:
             try:
-                h = fetch_ticker(s)
-                sector_data[s] = round(day_chg(h), 2)
+                price, chg = fetch_quote(s)
+                sector_data[s] = chg
             except Exception:
                 sector_data[s] = 0.0
 
