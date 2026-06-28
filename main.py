@@ -432,6 +432,40 @@ def analyze_ticker(ticker: str, direction: str = "BULLISH"):
     }
 
 
+@app.post("/api/test/telegram")
+def test_telegram():
+    """Send a test Telegram alert to confirm the bot is working."""
+    from alerts.telegram import TelegramAlert
+    import httpx
+    token   = config.TELEGRAM_BOT_TOKEN
+    chat_id = config.TELEGRAM_CHAT_ID
+    enabled = config.ALERTS_ENABLED
+    if not token or not chat_id:
+        return {"status": "error", "message": "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set in environment"}
+    if not enabled:
+        return {"status": "error", "message": "ALERTS_ENABLED is false — set it to true in Railway Variables"}
+    try:
+        url  = f"https://api.telegram.org/bot{token}/sendMessage"
+        resp = httpx.post(url, json={
+            "chat_id": chat_id,
+            "text": (
+                "✅ *ATHENA TEST ALERT*\n\n"
+                "If you see this message, Telegram alerts are working correctly\\!\n\n"
+                "Ticker: `SPY`\n"
+                "Direction: *BULLISH*\n"
+                "Confidence: *85/100*\n"
+                "Entry: `$730.00` | Stop: `$725.00` | T1: `$740.00`"
+            ),
+            "parse_mode": "MarkdownV2",
+        }, timeout=10)
+        if resp.is_success and resp.json().get("ok"):
+            return {"status": "success", "message": "Test alert sent — check your Telegram"}
+        else:
+            return {"status": "error", "message": resp.text}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 @app.get("/api/scheduler/jobs")
 def get_jobs():
     """List all scheduled jobs."""
