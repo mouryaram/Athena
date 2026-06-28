@@ -67,29 +67,42 @@ class MarketEngine:
     def _fetch_yfinance(self) -> MarketBias:
         import yfinance as yf
 
+        def fetch_quote_http(symbol):
+            """Fetch via Yahoo Finance JSON API directly — most reliable on cloud servers."""
+            import urllib.request, json, time
+            encoded = symbol.replace("^", "%5E")
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?interval=1d&range=5d"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "Accept": "application/json",
+            }
+            for attempt in range(3):
+                try:
+                    req = urllib.request.Request(url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=10) as r:
+                        data = json.loads(r.read())
+                    meta   = data["chart"]["result"][0]["meta"]
+                    price  = float(meta.get("regularMarketPrice") or meta.get("previousClose") or 0)
+                    prev   = float(meta.get("chartPreviousClose") or meta.get("previousClose") or 0)
+                    chg    = round((price - prev) / prev * 100, 2) if prev else 0.0
+                    return price, chg
+                except Exception:
+                    time.sleep(1)
+            return 0.0, 0.0
+
         def fetch_quote(symbol):
-            """Fetch last price and day change using fast_info (most reliable)."""
+            """Try yfinance fast_info first, fall back to direct HTTP."""
             try:
                 t = yf.Ticker(symbol)
                 info = t.fast_info
                 price = float(info.last_price or 0)
                 prev  = float(info.previous_close or 0)
-                chg   = round((price - prev) / prev * 100, 2) if prev else 0.0
-                return price, chg
-            except Exception:
-                pass
-            # fallback: 1mo daily history
-            try:
-                t = yf.Ticker(symbol)
-                hist = t.history(period="1mo", interval="1d", auto_adjust=False)
-                if not hist.empty:
-                    s = hist["Close"].dropna()
-                    price = float(s.iloc[-1])
-                    chg   = round((s.iloc[-1] - s.iloc[-2]) / s.iloc[-2] * 100, 2) if len(s) >= 2 else 0.0
+                if price > 0:
+                    chg = round((price - prev) / prev * 100, 2) if prev else 0.0
                     return price, chg
             except Exception:
                 pass
-            return 0.0, 0.0
+            return fetch_quote_http(symbol)
 
         spy,  spy_chg  = fetch_quote("SPY")
         qqq,  qqq_chg  = fetch_quote("QQQ")
