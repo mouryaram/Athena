@@ -249,44 +249,72 @@ class PriceActionEngine:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _fetch_or_mock(self, ticker: str, timeframe: str) -> dict:
-        """Try yfinance; fall back to mock data."""
+        """Try HTTP fetch with timeout; fall back to mock data immediately."""
         try:
-            return self._fetch_yfinance(ticker, timeframe)
+            import signal
+            def _timeout(signum, frame):
+                raise TimeoutError("fetch timeout")
+            signal.signal(signal.SIGALRM, _timeout)
+            signal.alarm(8)   # 8 second hard timeout
+            try:
+                result = self._fetch_http(ticker, timeframe)
+                signal.alarm(0)
+                return result
+            finally:
+                signal.alarm(0)
         except Exception as e:
-            log.debug(f"PA yfinance failed for {ticker}/{timeframe}: {e}")
+            log.debug(f"PA fetch failed for {ticker}/{timeframe}: {e} — using mock")
             return self._mock_data(ticker)
 
-    def _fetch_yfinance(self, ticker: str, timeframe: str) -> dict:
-        import yfinance as yf
-        import pandas as pd
-        tf_map = {"1d": "1d", "4h": "60m", "1h": "60m", "15m": "15m", "5m": "5m", "1m": "1m"}
-        period_map = {"1d": "60d", "4h": "30d", "1h": "5d", "15m": "2d", "5m": "1d", "1m": "1d"}
-        yf_tf = tf_map.get(timeframe, "60m")
-        period = period_map.get(timeframe, "5d")
-        hist = yf.Ticker(ticker).history(period=period, interval=yf_tf)
-        if hist.empty:
-            raise ValueError("Empty data")
+    def _fetch_http(self, ticker: str, timeframe: str) -> dict:
+        """Fetch OHLCV via Yahoo Finance JSON API directly."""
+        import urllib.request, json
+        tf_map     = {"1d": "1d",  "4h": "60m", "1h": "60m", "15m": "15m", "5m": "5m",  "1m": "2m"}
+        range_map  = {"1d": "60d", "4h": "30d", "1h": "5d",  "15m": "2d",  "5m": "1d",  "1m": "1d"}
+        interval   = tf_map.get(timeframe, "60m")
+        range_     = range_map.get(timeframe, "5d")
+        encoded    = ticker.replace("^", "%5E")
+        url        = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?interval={interval}&range={range_}"
+        headers    = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
-        closes  = hist["Close"].tolist()
-        highs   = hist["High"].tolist()
-        lows    = hist["Low"].tolist()
-        volumes = hist["Volume"].tolist()
-        last    = closes[-1]
+        req  = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=7) as r:
+            data = json.loads(r.read())
 
-        # EMA calculation
-        import ta
-        ema_20  = float(ta.trend.ema_indicator(hist["Close"], window=20).iloc[-1])
-        ema_50  = float(ta.trend.ema_indicator(hist["Close"], window=50).iloc[-1])
-        ema_200 = float(ta.trend.ema_indicator(hist["Close"], window=200).iloc[-1]) if len(hist) > 200 else last
-        atr     = float(ta.volatility.AverageTrueRange(hist["High"], hist["Low"], hist["Close"], window=14).average_true_range().iloc[-1])
+        result  = data["chart"]["result"][0]
+        quotes  = result["indicators"]["quote"][0]
+        closes  = [float(x) for x in quotes["close"]  if x is not None]
+        highs   = [float(x) for x in quotes["high"]   if x is not None]
+        lows    = [float(x) for x in quotes["low"]    if x is not None]
+        volumes = [float(x) for x in quotes["volume"] if x is not None]
+
+        if not closes:
+            raise ValueError("No close data")
+
+        last = closes[-1]
+
+        # Simple EMA calculation without ta library
+        def ema(values, period):
+            if len(values) < period:
+                return values[-1]
+            k = 2 / (period + 1)
+            e = values[0]
+            for v in values[1:]:
+                e = v * k + e * (1 - k)
+            return e
+
+        ema_20  = ema(closes, 20)
+        ema_50  = ema(closes, 50)
+        ema_200 = ema(closes, 200) if len(closes) >= 200 else last
 
         swing_high = max(highs[-20:]) if len(highs) >= 20 else max(highs)
         swing_low  = min(lows[-20:])  if len(lows)  >= 20 else min(lows)
+        atr        = (swing_high - swing_low) / max(len(closes), 1)
 
         return {
             "closes": closes, "highs": highs, "lows": lows, "volumes": volumes,
             "ema_20": ema_20, "ema_50": ema_50, "ema_200": ema_200,
-            "vwap": last,   # simplified VWAP as last price reference
+            "vwap": last,
             "atr": atr,
             "support": swing_low, "resistance": swing_high,
             "swing_high": swing_high, "swing_low": swing_low,
