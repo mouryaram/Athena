@@ -256,16 +256,30 @@ class PriceActionEngine:
     # Data Fetching / Mock
     # ──────────────────────────────────────────────────────────────────────────
 
+    # Approximate last-known prices — used as fallback when Yahoo Finance is unreachable
+    _PRICE_HINTS = {
+        "SPY": 595, "QQQ": 510, "IWM": 210, "DIA": 430,
+        "AAPL": 210, "MSFT": 440, "GOOGL": 180, "AMZN": 205, "META": 700,
+        "NVDA": 135, "TSLA": 340, "AMD": 165, "PLTR": 95, "NFLX": 1150,
+        "CRM": 320, "SNOW": 155, "UBER": 88, "COIN": 260,
+        "JPM": 255, "GS": 580, "BAC": 46, "XOM": 110, "CVX": 155,
+        "SMCI": 45, "MU": 115, "AVGO": 240, "TSM": 185, "LLY": 850,
+        "UNH": 290, "HOOD": 38, "MSTR": 400, "RKLB": 22, "IONQ": 38,
+    }
+
     def _fetch_or_mock(self, ticker: str, timeframe: str) -> dict:
-        """Try HTTP fetch; fall back to mock data on failure."""
-        try:
-            return self._fetch_http(ticker, timeframe)
-        except Exception as e:
-            log.debug(f"PA fetch failed for {ticker}/{timeframe}: {e} — using mock")
-            return self._mock_data(ticker)
+        """Try HTTP fetch with hard thread timeout; fall back to realistic mock data."""
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(self._fetch_http, ticker, timeframe)
+            try:
+                return future.result(timeout=10)   # hard 10s wall-clock timeout
+            except (FuturesTimeout, Exception) as e:
+                log.debug(f"PA fetch failed for {ticker}/{timeframe}: {e} — using mock")
+                return self._mock_data(ticker)
 
     def _fetch_http(self, ticker: str, timeframe: str) -> dict:
-        """Fetch OHLCV via Yahoo Finance JSON API using requests (reliable timeouts)."""
+        """Fetch OHLCV via Yahoo Finance JSON API — strict (3s connect, 7s read)."""
         import requests
         tf_map    = {"1d": "1d",  "4h": "60m", "1h": "60m", "15m": "15m", "5m": "5m", "1m": "2m"}
         range_map = {"1d": "60d", "4h": "30d", "1h": "5d",  "15m": "2d",  "5m": "1d", "1m": "1d"}
@@ -282,7 +296,7 @@ class PriceActionEngine:
         for base in ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]:
             try:
                 url  = f"{base}/v8/finance/chart/{encoded}?interval={interval}&range={range_}"
-                resp = requests.get(url, headers=headers, timeout=12)
+                resp = requests.get(url, headers=headers, timeout=(3, 7))  # (connect, read)
                 resp.raise_for_status()
                 data = resp.json()
                 if data.get("chart", {}).get("result"):
@@ -336,7 +350,7 @@ class PriceActionEngine:
         }
 
     def _mock_data(self, ticker: str) -> dict:
-        base = random.uniform(100, 500)
+        base = self._PRICE_HINTS.get(ticker.upper(), random.uniform(100, 500))
         closes  = [base + random.gauss(0, base * 0.005) for _ in range(50)]
         closes  = [max(1, c) for c in closes]
         highs   = [c * random.uniform(1.001, 1.005) for c in closes]

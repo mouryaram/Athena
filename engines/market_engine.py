@@ -68,26 +68,27 @@ class MarketEngine:
         import yfinance as yf
 
         def fetch_quote_http(symbol):
-            """Fetch via Yahoo Finance JSON API directly — most reliable on cloud servers."""
-            import urllib.request, json, time
+            """Fetch via Yahoo Finance JSON API — strict timeouts to avoid hanging."""
+            import requests as req_lib
             encoded = symbol.replace("^", "%5E")
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?interval=1d&range=5d"
             headers = {
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
                 "Accept": "application/json",
             }
-            for attempt in range(3):
+            for base in ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]:
                 try:
-                    req = urllib.request.Request(url, headers=headers)
-                    with urllib.request.urlopen(req, timeout=10) as r:
-                        data = json.loads(r.read())
+                    url  = f"{base}/v8/finance/chart/{encoded}?interval=1d&range=5d"
+                    resp = req_lib.get(url, headers=headers, timeout=(3, 7))
+                    resp.raise_for_status()
+                    data   = resp.json()
                     meta   = data["chart"]["result"][0]["meta"]
                     price  = float(meta.get("regularMarketPrice") or meta.get("previousClose") or 0)
                     prev   = float(meta.get("chartPreviousClose") or meta.get("previousClose") or 0)
                     chg    = round((price - prev) / prev * 100, 2) if prev else 0.0
-                    return price, chg
+                    if price > 0:
+                        return price, chg
                 except Exception:
-                    time.sleep(1)
+                    continue
             return 0.0, 0.0
 
         def fetch_quote(symbol):
