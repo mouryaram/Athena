@@ -64,15 +64,31 @@ class MultiTimeframeEngine:
         bullish_weight = 0.0
         bearish_weight = 0.0
 
+        # Fetch all 6 timeframes in parallel — reduces from ~72s to ~12s
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        def _fetch_tf(tf):
+            return tf, self._pa.analyze(ticker, tf, direction_bias=direction_bias)
+
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            futures = {ex.submit(_fetch_tf, tf): tf for tf in self.TF_WEIGHTS}
+            for future in as_completed(futures, timeout=15):
+                try:
+                    tf, pa = future.result()
+                    tf_results[tf] = pa
+                except Exception as e:
+                    tf = futures[future]
+                    log.warning(f"MTF fetch failed for {ticker}/{tf}: {e}")
+
         for tf, weight in self.TF_WEIGHTS.items():
-            pa = self._pa.analyze(ticker, tf, direction_bias=direction_bias)
-            tf_results[tf] = pa
-            attr = self.TF_ATTR[tf]
-            setattr(result, attr, pa.trend)
-            # Accumulate directional weight
-            if pa.trend in ("UPTREND",):
+            pa = tf_results.get(tf)
+            if pa is None:
+                continue
+            attr = self.TF_ATTR.get(tf)
+            if attr:
+                setattr(result, attr, pa.trend)
+            if pa.trend == "UPTREND":
                 bullish_weight += weight
-            elif pa.trend in ("DOWNTREND",):
+            elif pa.trend == "DOWNTREND":
                 bearish_weight += weight
             weighted_score += (pa.score / 100) * weight
 
