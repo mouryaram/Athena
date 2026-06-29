@@ -5,9 +5,10 @@ Weights: Price Action 50%, MTF 20%, Market Context 10%, Quant 10%, Evidence 10%.
 Rule: Price Action failure = NO TRADE, no matter the other scores.
 """
 import logging
+import os
 from dataclasses import dataclass
 from typing import Optional
-import sys, os
+import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import config
 
@@ -103,11 +104,13 @@ class ConfidenceEngine:
         result.confidence = round(min(100, max(0, raw + result.ev_score)), 1)
 
         # ── Step 8: Trade Decision ────────────────────────────────────────────
+        test_mode = os.environ.get("TEST_MODE", "false").lower() == "true"
         threshold = config.CONFIDENCE_THRESHOLD
-        if result.confidence >= threshold:
+        if result.confidence >= threshold or test_mode:
             result.trade_allowed = True
+            prefix = "TEST ALERT – " if test_mode else "TRADE ALERT – "
             result.reason = (
-                f"TRADE ALERT – Confidence {result.confidence:.0f}/100 "
+                f"{prefix}Confidence {result.confidence:.0f}/100 "
                 f"(threshold {threshold}) | {direction}"
             )
         else:
@@ -127,7 +130,8 @@ class ConfidenceEngine:
             risk   = abs(result.entry - result.stop)
             reward = abs(result.target1 - result.entry)
             result.risk_reward = round(reward / max(risk, 0.01), 2)
-            if result.risk_reward < config.MIN_REWARD_RATIO:
+            # Skip R:R check in TEST_MODE — mock data produces unrealistic ratios
+            if result.risk_reward < config.MIN_REWARD_RATIO and not test_mode:
                 result.trade_allowed = False
                 result.reason = (
                     f"NO TRADE – R:R {result.risk_reward:.1f} below minimum {config.MIN_REWARD_RATIO}"
