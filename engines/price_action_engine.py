@@ -268,18 +268,71 @@ class PriceActionEngine:
     }
 
     def _fetch_or_mock(self, ticker: str, timeframe: str) -> dict:
-        """Try HTTP fetch with hard thread timeout; fall back to realistic mock data."""
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+        """Try yfinance then HTTP; fall back to realistic mock on any failure."""
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FT
         with ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(self._fetch_http, ticker, timeframe)
+            future = ex.submit(self._fetch_yfinance, ticker, timeframe)
             try:
-                return future.result(timeout=10)   # hard 10s wall-clock timeout
-            except (FuturesTimeout, Exception) as e:
+                return future.result(timeout=12)
+            except (FT, Exception) as e:
                 log.debug(f"PA fetch failed for {ticker}/{timeframe}: {e} — using mock")
                 return self._mock_data(ticker)
 
+    def _fetch_yfinance(self, ticker: str, timeframe: str) -> dict:
+        """Fetch OHLCV using yfinance library (more reliable on cloud than raw HTTP)."""
+        import yfinance as yf
+        tf_map     = {"1d": "1d", "4h": "1h", "1h": "1h", "15m": "15m", "5m": "5m", "1m": "1m"}
+        period_map = {"1d": "60d", "4h": "30d", "1h": "5d", "15m": "2d", "5m": "1d", "1m": "1d"}
+        interval   = tf_map.get(timeframe, "1h")
+        period     = period_map.get(timeframe, "5d")
+
+        t  = yf.Ticker(ticker)
+        df = t.history(period=period, interval=interval)
+        if df is None or len(df) < 5:
+            raise ValueError(f"yfinance returned no data for {ticker}")
+
+        closes  = df["Close"].dropna().tolist()
+        highs   = df["High"].dropna().tolist()
+        lows    = df["Low"].dropna().tolist()
+        volumes = df["Volume"].dropna().tolist()
+
+        if not closes:
+            raise ValueError(f"No close data for {ticker}")
+
+        last = float(closes[-1])
+
+        def ema(values, period):
+            if len(values) < period:
+                return values[-1]
+            k = 2 / (period + 1)
+            e = values[0]
+            for v in values[1:]:
+                e = v * k + e * (1 - k)
+            return e
+
+        ema_20  = ema(closes, 20)
+        ema_50  = ema(closes, 50)
+        ema_200 = ema(closes, 200) if len(closes) >= 200 else last
+
+        swing_high = max(highs[-20:]) if len(highs) >= 20 else max(highs)
+        swing_low  = min(lows[-20:])  if len(lows)  >= 20 else min(lows)
+        atr        = (swing_high - swing_low) / max(len(closes), 1)
+
+        log.debug(f"yfinance OK: {ticker} last={last:.2f} bars={len(closes)}")
+        return {
+            "closes": closes, "highs": highs, "lows": lows, "volumes": volumes,
+            "ema_20": ema_20, "ema_50": ema_50, "ema_200": ema_200,
+            "vwap": last,
+            "atr": atr,
+            "support": swing_low, "resistance": swing_high,
+            "swing_high": swing_high, "swing_low": swing_low,
+            "fib_618": swing_low + (swing_high - swing_low) * 0.618,
+            "fib_500": swing_low + (swing_high - swing_low) * 0.5,
+            "fib_382": swing_low + (swing_high - swing_low) * 0.382,
+        }
+
     def _fetch_http(self, ticker: str, timeframe: str) -> dict:
-        """Fetch OHLCV via Yahoo Finance JSON API — strict (3s connect, 7s read)."""
+        """Fallback: fetch OHLCV via Yahoo Finance JSON API — strict (3s connect, 7s read)."""
         import requests
         tf_map    = {"1d": "1d",  "4h": "60m", "1h": "60m", "15m": "15m", "5m": "5m", "1m": "2m"}
         range_map = {"1d": "60d", "4h": "30d", "1h": "5d",  "15m": "2d",  "5m": "1d", "1m": "1d"}
@@ -296,7 +349,7 @@ class PriceActionEngine:
         for base in ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]:
             try:
                 url  = f"{base}/v8/finance/chart/{encoded}?interval={interval}&range={range_}"
-                resp = requests.get(url, headers=headers, timeout=(3, 7))  # (connect, read)
+                resp = requests.get(url, headers=headers, timeout=(3, 7))
                 resp.raise_for_status()
                 data = resp.json()
                 if data.get("chart", {}).get("result"):

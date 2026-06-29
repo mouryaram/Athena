@@ -150,11 +150,34 @@ def get_watchlist(active_only: bool = True, db: Session = Depends(get_db)):
     } for w in items]
 
 
+_rebuild_status = {"running": False, "last": "never", "items": 0}
+
+def _do_rebuild():
+    global _rebuild_status
+    _rebuild_status["running"] = True
+    try:
+        workflow.phase_premarket_bias()
+        items = workflow.phase_build_watchlist()
+        _rebuild_status["items"] = len(items)
+        _rebuild_status["last"] = datetime.utcnow().strftime("%H:%M:%S UTC")
+        log.info(f"Rebuild complete: {len(items)} items")
+    except Exception as e:
+        log.error(f"Rebuild error: {e}")
+        _rebuild_status["last"] = f"error: {e}"
+    finally:
+        _rebuild_status["running"] = False
+
 @app.post("/api/watchlist/rebuild")
 def rebuild_watchlist(background_tasks: BackgroundTasks):
-    """Manually trigger watchlist rebuild."""
-    background_tasks.add_task(workflow.phase_build_watchlist)
-    return {"status": "rebuilding", "message": "Watchlist rebuild started in background"}
+    """Trigger watchlist rebuild in background — returns immediately."""
+    if _rebuild_status["running"]:
+        return {"status": "already_running", "message": "Rebuild already in progress…"}
+    background_tasks.add_task(_do_rebuild)
+    return {"status": "started", "message": "Rebuild started — watchlist will update in ~60 seconds"}
+
+@app.get("/api/watchlist/rebuild/status")
+def rebuild_status():
+    return _rebuild_status
 
 
 # ─── Trade Ideas ─────────────────────────────────────────────────────────────
@@ -389,9 +412,13 @@ def run_scan(background_tasks: BackgroundTasks):
     return {"status": "started", "message": "Scanner triggered"}
 
 @app.post("/api/run/live-cycle")
-def run_live_cycle(background_tasks: BackgroundTasks):
-    background_tasks.add_task(workflow.run_live_cycle)
-    return {"status": "started", "message": "Live cycle triggered"}
+def run_live_cycle():
+    """Run live cycle synchronously and return alerts fired."""
+    try:
+        alerts = workflow.run_live_cycle()
+        return {"status": "done", "alerts_fired": len(alerts), "alerts": alerts}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/api/run/eod")
 def run_eod(background_tasks: BackgroundTasks):
@@ -435,13 +462,13 @@ def analyze_ticker(ticker: str, direction: str = "BULLISH"):
 @app.post("/api/test/telegram")
 def test_telegram():
     """Send a test Telegram alert to confirm the bot is working."""
-    from alerts.telegram import TelegramAlert
-    import httpx
-    token   = config.TELEGRAM_BOT_TOKEN
-    chat_id = config.TELEGRAM_CHAT_ID
-    enabled = config.ALERTS_ENABLED
+    import httpx, os
+    token   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    enabled = os.environ.get("ALERTS_ENABLED", "false").lower() == "true"
     if not token or not chat_id:
-        return {"status": "error", "message": "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set in environment"}
+        all_vars = [k for k in os.environ.keys() if "TELEGRAM" in k or "ALERT" in k]
+        return {"status": "error", "message": f"TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set in environment. Found vars: {all_vars}"}
     if not enabled:
         return {"status": "error", "message": "ALERTS_ENABLED is false — set it to true in Railway Variables"}
     try:
@@ -451,12 +478,11 @@ def test_telegram():
             "text": (
                 "✅ *ATHENA TEST ALERT*\n\n"
                 "If you see this message, Telegram alerts are working correctly\\!\n\n"
-                "Ticker: `SPY`\n"
-                "Direction: *BULLISH*\n"
-                "Confidence: *85/100*\n"
-                "Entry: `$730.00` | Stop: `$725.00` | T1: `$740.00`"
+                "Ticker: SPY\n"
+                "Direction: BULLISH\n"
+                "Confidence: 85/100\n"
+                "Entry: $730.00 | Stop: $725.00 | T1: $740.00"
             ),
-            "parse_mode": "MarkdownV2",
         }, timeout=10)
         if resp.is_success and resp.json().get("ok"):
             return {"status": "success", "message": "Test alert sent — check your Telegram"}
@@ -464,6 +490,23 @@ def test_telegram():
             return {"status": "error", "message": resp.text}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/debug/prices")
+def debug_prices():
+    """Check what prices yfinance actually returns for key tickers."""
+    import yfinance as yf
+    results = {}
+    for ticker in ["SPY", "QQQ", "NVDA", "AAPL", "META"]:
+        try:
+            t = yf.Ticker(ticker)
+            info = t.fast_info
+            price = float(info.last_price or 0)
+            prev  = float(info.previous_close or 0)
+            results[ticker] = {"price": price, "prev_close": prev, "source": "yfinance"}
+        except Exception as e:
+            results[ticker] = {"price": 0, "error": str(e), "source": "failed"}
+    return results
 
 
 @app.get("/api/scheduler/jobs")
