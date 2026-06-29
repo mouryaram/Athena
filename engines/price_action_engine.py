@@ -256,15 +256,15 @@ class PriceActionEngine:
     # Data Fetching / Mock
     # ──────────────────────────────────────────────────────────────────────────
 
-    # Approximate last-known prices — used as fallback when Yahoo Finance is unreachable
+    # Approximate last-known prices — used as fallback when yfinance is unreachable
     _PRICE_HINTS = {
-        "SPY": 595, "QQQ": 510, "IWM": 210, "DIA": 430,
-        "AAPL": 210, "MSFT": 440, "GOOGL": 180, "AMZN": 205, "META": 700,
-        "NVDA": 135, "TSLA": 340, "AMD": 165, "PLTR": 95, "NFLX": 1150,
-        "CRM": 320, "SNOW": 155, "UBER": 88, "COIN": 260,
-        "JPM": 255, "GS": 580, "BAC": 46, "XOM": 110, "CVX": 155,
-        "SMCI": 45, "MU": 115, "AVGO": 240, "TSM": 185, "LLY": 850,
-        "UNH": 290, "HOOD": 38, "MSTR": 400, "RKLB": 22, "IONQ": 38,
+        "SPY": 729, "QQQ": 707, "IWM": 215, "DIA": 440,
+        "AAPL": 284, "MSFT": 450, "GOOGL": 190, "AMZN": 220, "META": 550,
+        "NVDA": 193, "TSLA": 360, "AMD": 175, "PLTR": 145, "NFLX": 1200,
+        "CRM": 330, "SNOW": 160, "UBER": 90, "COIN": 270,
+        "JPM": 265, "GS": 600, "BAC": 48, "XOM": 115, "CVX": 160,
+        "SMCI": 50, "MU": 120, "AVGO": 250, "TSM": 195, "LLY": 880,
+        "UNH": 295, "HOOD": 40, "MSTR": 420, "RKLB": 25, "IONQ": 40,
     }
 
     def _fetch_or_mock(self, ticker: str, timeframe: str) -> dict:
